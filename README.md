@@ -19,8 +19,15 @@ Each step's output is saved to disk, so a run can be resumed or re-run from any 
 
 ## Where files are saved
 
-- `work-in-progress/` - every intermediate file a run produces: the video listing, raw and cleaned transcripts, the outline, and versioned manuscript drafts (`master_manuscript_v1.txt`, `v2.txt`, and so on). Safe to delete between fresh runs.
+- `work-in-progress/<channel>_<timestamp>/` - every intermediate file one run produces: the video listing, raw and cleaned transcripts, the outline, and versioned manuscript drafts (`master_manuscript_v1.txt`, `v2.txt`, and so on). Every run gets its own fresh, timestamped folder here automatically, so earlier test runs are kept side by side, never overwritten. The folder actually used is printed at the start of each run.
 - `output/` - one finished-book copy per completed run, named `@channel_YYYY-MM-DD_HH-MM-SS.txt`, for example `@SeanDollwet_2026-10-10_15-42-07.txt`. This folder is the one to look in for the finished result.
+
+To resume a specific earlier run instead of starting fresh (for example with `--from-step`/`--to-step`), pass that run's exact folder back in with `--work-dir`:
+
+```bash
+python3 youtube_channel_knowledge_extractor.py --channel https://www.youtube.com/@ChannelName \
+    --work-dir "work-in-progress/@ChannelName_2026-10-10_15-54-46" --from-step 5 --to-step 8
+```
 
 ## Setup
 
@@ -60,7 +67,7 @@ python3 youtube_channel_knowledge_extractor.py --channel "https://www.youtube.co
 
 ### Options
 
-- `--work-dir FOLDER` - where intermediate files are saved (default: `work-in-progress`)
+- `--work-dir FOLDER` - where intermediate files are saved (default: a new timestamped folder under `work-in-progress/` for every run)
 - `--output-dir FOLDER` - where each run's finished book copy is saved (default: `output`)
 - `--languages en,es` - caption languages to try, in order
 - `--threshold 0.88` - how alike two sentences must be to count as the same idea; raise toward `0.95` to remove less, lower toward `0.80` to remove more

@@ -20,10 +20,14 @@ Optional: set ANTHROPIC_API_KEY so the AI steps (5 and 6) run at full
 quality; without it the tool falls back to simple offline methods.
 
 Where things are saved:
-    work-in-progress/   every intermediate file a run produces (listing,
-                         transcripts, outline, versioned manuscript drafts).
+    work-in-progress/<channel>_<timestamp>/   every intermediate file one
+        run produces (listing, transcripts, outline, manuscript drafts).
+        Each run gets its own fresh, timestamped folder, so earlier test
+        runs are kept, not overwritten. Pass --work-dir to reuse a specific
+        earlier run's folder instead (for example, to resume with
+        --from-step/--to-step).
     output/             one finished-book copy per run, named
-                         @channel_YYYY-MM-DD_HH-MM-SS.txt
+                        @channel_YYYY-MM-DD_HH-MM-SS.txt
 """
 
 from __future__ import annotations
@@ -724,7 +728,13 @@ def parse_args(argv=None) -> argparse.Namespace:
         ),
     )
     p.add_argument(
-        "--work-dir", default="work-in-progress", help="Folder for intermediate files (default: work-in-progress)"
+        "--work-dir",
+        default=None,
+        help=(
+            "Folder for intermediate files. Default: a fresh, timestamped folder under "
+            "work-in-progress/ is created for every run, so earlier test runs are kept. "
+            "Pass an existing run's folder here to resume it with --from-step/--to-step."
+        ),
     )
     p.add_argument(
         "--output-dir", default="output", help="Folder where each run's finished book copy is saved (default: output)"
@@ -739,11 +749,18 @@ def parse_args(argv=None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def default_work_dir(channel_url: str) -> Path:
+    """A fresh, timestamped folder for one run, so earlier test runs are never overwritten."""
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return Path("work-in-progress") / f"{channel_handle(channel_url)}_{stamp}"
+
+
 def main(argv=None) -> int:
     a = parse_args(argv)
+    work_dir = Path(a.work_dir) if a.work_dir else default_work_dir(a.channel)
     settings = Settings(
         channel_url=a.channel,
-        work_dir=Path(a.work_dir),
+        work_dir=work_dir,
         output_dir=Path(a.output_dir),
         languages=tuple(x.strip() for x in a.languages.split(",") if x.strip()),
         use_llm=not a.no_llm,
@@ -752,6 +769,7 @@ def main(argv=None) -> int:
         max_videos=a.max_videos,
     )
     settings.work_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Working files for this run: {settings.work_dir}")
     llm = get_llm(settings) if a.to_step >= 5 and a.from_step <= 6 else None
     run = lambda n: a.from_step <= n <= a.to_step  # noqa: E731
 
