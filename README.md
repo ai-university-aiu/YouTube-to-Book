@@ -71,13 +71,17 @@ python3 youtube_channel_knowledge_extractor.py --channel "https://www.youtube.co
 - `--output-dir FOLDER` - where each run's finished book copy is saved (default: `output`)
 - `--languages en,es` - caption languages to try, in order
 - `--threshold 0.88` - how alike two sentences must be to count as the same idea; raise toward `0.95` to remove less, lower toward `0.80` to remove more
-- `--delay 1.0` - seconds to wait between transcript requests; raise it if YouTube starts refusing
+- `--delay 2.0` - seconds to wait between transcript requests that succeed (default: `2.0`); on a failure this doubles automatically, up to 60 seconds, before the next request
 - `--from-step` / `--to-step` - rerun only part of the pipeline, numbered 1 through 8
 - `--no-llm` - run without the AI model, using simple offline fallbacks
 
-## A known limitation: cloud IP blocking
+## A known limitation: YouTube rate-limiting one IP address
 
-Step 4, downloading transcripts, calls YouTube directly for each video's captions. YouTube blocks most requests coming from cloud-provider IP addresses (Amazon Web Services, Google Cloud Platform, Microsoft Azure, and similar hosted machines), regardless of this tool. If every video fails with `IpBlocked`, this is almost always the cause, not a bug in the code. Run the tool from a normal home or office internet connection instead, or see the "Working around IP bans" section of the youtube-transcript-api project for other options.
+Step 4, downloading transcripts, calls YouTube directly for each video's captions, first through the youtube-transcript-api library and, if that fails, through a second, independent request via yt-dlp's own caption tracks. If every video fails with `IpBlocked` even on this second path, YouTube has rate-limited the whole caption-serving service for this one IP address, usually because of too many caption requests in a short time, not because of anything wrong with the code. This can happen on an ordinary home or office connection too, not just cloud servers, if enough test runs are made back to back in a short window.
+
+The tool now protects itself and your IP address from making this worse: `--delay` (default 2 seconds) is the pause between videos that succeed, and after a failure the pause doubles each time, up to 60 seconds, before trying the next video. After 3 failures in a row, it stops trying further videos in that run entirely and marks them "skipped" rather than "failed", so one rate-limited window does not get treated as "this channel has no captions."
+
+If this happens, wait a while, anywhere from tens of minutes to a few hours, before running Step 4 again. See the "Working around IP bans" section of the youtube-transcript-api project for further options, including residential rotating proxies, if this needs to run unattended and frequently.
 
 ## Responsible use
 

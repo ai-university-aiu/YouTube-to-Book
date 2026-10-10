@@ -395,9 +395,66 @@ def tidy_caption_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _ytdlp_caption_track(video_id: str, languages: list[str]) -> tuple[str, str] | None:
+    """Ask yt-dlp (not youtube-transcript-api) for a json3 caption track URL.
+
+    Tries real captions before auto-generated ones, and the requested languages
+    in order. Returns (language_code, url), or None if nothing usable was found.
+    """
+    options = {"quiet": True, "no_warnings": True, "skip_download": True, "ignoreerrors": True}
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False) or {}
+
+    for key in ("subtitles", "automatic_captions"):
+        tracks = info.get(key) or {}
+        for lang in languages:
+            for code, formats in tracks.items():
+                if code == lang or code.startswith(lang + "-"):
+                    for fmt in formats:
+                        if fmt.get("ext") == "json3" and fmt.get("url"):
+                            return code, fmt["url"]
+    return None
+
+
+def _fetch_json3_captions(url: str) -> str:
+    """Download a json3 caption track and join its text segments into one string."""
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    pieces = [
+        seg.get("utf8", "")
+        for event in data.get("events", [])
+        for seg in (event.get("segs") or [])
+    ]
+    return "".join(pieces)
+
+
+def fetch_transcript_text(api: YouTubeTranscriptApi, video_id: str, languages: list[str]) -> str:
+    """Fetch a transcript via youtube-transcript-api, falling back to yt-dlp's own
+    caption tracks (a different request path) if that is blocked or fails."""
+    try:
+        fetched = api.fetch(video_id, languages=languages)
+        return tidy_caption_text(" ".join(snippet.text for snippet in fetched))
+    except Exception as primary_exc:
+        track = _ytdlp_caption_track(video_id, languages)
+        if not track:
+            raise primary_exc
+        _, url = track
+        return tidy_caption_text(_fetch_json3_captions(url))
+
+
+MAX_CONSECUTIVE_FAILURES = 3  # stop hammering a rate-limited IP instead of failing through the whole list
+MAX_BACKOFF_SECONDS = 60.0
+
+
 def download_transcripts(settings: Settings, organized: dict) -> dict:
     api = YouTubeTranscriptApi()
     manifest = read_json(settings.manifest_file) if settings.manifest_file.exists() else {}
+
+    consecutive_failures = 0
+    stopped_early = False
 
     for index, group in enumerate(organized["groups"], start=1):
         folder = f"{index:02d}_{slugify(group['name'])}"
@@ -413,23 +470,51 @@ def download_transcripts(settings: Settings, organized: dict) -> dict:
             }
             if path.exists():  # resume support: skip what is already downloaded
                 manifest[video["id"]] = entry
+                consecutive_failures = 0
                 continue
+
+            if stopped_early:
+                entry["status"] = "skipped"
+                entry["error"] = "stopped_early_after_repeated_failures"
+                manifest[video["id"]] = entry
+                continue
+
             try:
-                fetched = api.fetch(video["id"], languages=list(settings.languages))
-                body = tidy_caption_text(" ".join(snippet.text for snippet in fetched))
+                body = fetch_transcript_text(api, video["id"], list(settings.languages))
                 write_transcript_file(path, video["title"], video["url"], body)
                 print(f"  saved {relative}")
+                consecutive_failures = 0
+                manifest[video["id"]] = entry
+                write_json(settings.manifest_file, manifest)
+                time.sleep(settings.delay_seconds)
+                continue
             except Exception as exc:  # captions off, private video, blocked IP, and so on
                 entry["status"] = "failed"
                 entry["error"] = type(exc).__name__
-                print(f"  FAILED {video['id']}: {type(exc).__name__}")
-            manifest[video["id"]] = entry
-            write_json(settings.manifest_file, manifest)
-            time.sleep(settings.delay_seconds)
+                consecutive_failures += 1
+                print(f"  FAILED {video['id']}: {type(exc).__name__} ({consecutive_failures} failure(s) in a row)")
+                manifest[video["id"]] = entry
+                write_json(settings.manifest_file, manifest)
+
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                stopped_early = True
+                print(
+                    f"  Stopping transcript downloads after {consecutive_failures} failures in a row - "
+                    "this usually means YouTube is rate-limiting this IP right now, not that every "
+                    "remaining video lacks captions. Remaining videos are marked 'skipped'. Wait a "
+                    "while (try tens of minutes to a few hours) before re-running this step."
+                )
+                continue
+
+            backoff = min(settings.delay_seconds * (2 ** consecutive_failures), MAX_BACKOFF_SECONDS)
+            print(f"  Backing off for {backoff:.0f}s before the next request ...")
+            time.sleep(backoff)
 
     write_json(settings.manifest_file, manifest)
     ok = sum(1 for m in manifest.values() if m["status"] == "ok")
-    print(f"Transcripts saved: {ok} of {len(manifest)}.")
+    failed = sum(1 for m in manifest.values() if m["status"] == "failed")
+    skipped = sum(1 for m in manifest.values() if m["status"] == "skipped")
+    print(f"Transcripts saved: {ok} of {len(manifest)} ({failed} failed, {skipped} skipped).")
     return manifest
 
 # ============================================================================
@@ -744,7 +829,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--to-step", type=int, default=8, help="Last step to run, 1 to 8 (default: 8)")
     p.add_argument("--no-llm", action="store_true", help="Skip the AI model and use simple offline fallbacks")
     p.add_argument("--threshold", type=float, default=0.88, help="Duplicate similarity from 0 to 1 (default: 0.88)")
-    p.add_argument("--delay", type=float, default=1.0, help="Seconds to wait between transcript requests")
+    p.add_argument(
+        "--delay", type=float, default=2.0, help="Seconds to wait between transcript requests (default: 2.0)"
+    )
     p.add_argument("--max-videos", type=int, default=0, help="Limit videos for a quick test (0 means all)")
     return p.parse_args(argv)
 
