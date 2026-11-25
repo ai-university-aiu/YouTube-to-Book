@@ -450,10 +450,44 @@ def fetch_transcript_text(api: YouTubeTranscriptApi, video_id: str, languages: l
 MAX_CONSECUTIVE_FAILURES = 3  # stop hammering a rate-limited IP instead of failing through the whole list
 MAX_BACKOFF_SECONDS = 60.0
 
+# Shared across every run and every --work-dir, so separate test sessions are spaced apart in
+# real wall-clock time, not just by the per-request delay within a single run.
+LAST_LIVE_ATTEMPT_FILE = Path("work-in-progress") / ".last_live_transcript_attempt.json"
 
-def download_transcripts(settings: Settings, organized: dict) -> dict:
-    api = YouTubeTranscriptApi()
+
+def time_since_last_live_attempt(state_file: Path = LAST_LIVE_ATTEMPT_FILE) -> float | None:
+    """Minutes since Step 4 last made a live request to YouTube, or None if never recorded."""
+    if not state_file.exists():
+        return None
+    try:
+        last = datetime.fromisoformat(read_json(state_file)["last_attempt"])
+    except (KeyError, ValueError, json.JSONDecodeError):
+        return None
+    return (datetime.now() - last).total_seconds() / 60.0
+
+
+def record_live_attempt(state_file: Path = LAST_LIVE_ATTEMPT_FILE) -> None:
+    write_json(state_file, {"last_attempt": datetime.now().isoformat()})
+
+
+def download_transcripts(
+    settings: Settings, organized: dict, min_session_gap_minutes: float = 0.0, ignore_cooldown: bool = False
+) -> dict:
     manifest = read_json(settings.manifest_file) if settings.manifest_file.exists() else {}
+
+    if min_session_gap_minutes > 0 and not ignore_cooldown:
+        elapsed = time_since_last_live_attempt()
+        if elapsed is not None and elapsed < min_session_gap_minutes:
+            remaining = min_session_gap_minutes - elapsed
+            print(
+                f"Skipping Step 4: the last live transcript attempt was {elapsed:.1f} minute(s) ago, "
+                f"under the --min-session-gap of {min_session_gap_minutes:.0f} minute(s). Wait about "
+                f"{remaining:.0f} more minute(s), or pass --ignore-cooldown to proceed anyway."
+            )
+            return manifest
+
+    record_live_attempt()
+    api = YouTubeTranscriptApi()
 
     consecutive_failures = 0
     stopped_early = False
@@ -847,6 +881,20 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Longest random wait, in seconds, between transcript requests (default: 10.0)",
     )
     p.add_argument("--max-videos", type=int, default=0, help="Limit videos for a quick test (0 means all)")
+    p.add_argument(
+        "--min-session-gap",
+        type=float,
+        default=30.0,
+        help=(
+            "Minimum real minutes required since the last live transcript attempt (across every "
+            "--work-dir) before Step 4 will run again; 0 disables this check (default: 30.0)"
+        ),
+    )
+    p.add_argument(
+        "--ignore-cooldown",
+        action="store_true",
+        help="Run Step 4 even if --min-session-gap has not elapsed since the last attempt",
+    )
     return p.parse_args(argv)
 
 
@@ -893,7 +941,7 @@ def main(argv=None) -> int:
 
     if run(4):
         print("Step 4: downloading transcripts")
-        download_transcripts(settings, organized)
+        download_transcripts(settings, organized, a.min_session_gap, a.ignore_cooldown)
 
     if run(5):
         print("Step 5: cleaning transcripts into grammatical sentences")

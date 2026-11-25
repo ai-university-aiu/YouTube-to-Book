@@ -72,6 +72,8 @@ python3 youtube_channel_knowledge_extractor.py --channel "https://www.youtube.co
 - `--languages en,es` - caption languages to try, in order
 - `--threshold 0.88` - how alike two sentences must be to count as the same idea; raise toward `0.95` to remove less, lower toward `0.80` to remove more
 - `--delay-min 2.0` / `--delay-max 10.0` - the pause between transcript requests that succeed is a random value in this range, not a fixed number, so request timing does not look perfectly mechanical; on a failure the pause grows (doubling, up to 60 seconds, with its own random variation)
+- `--min-session-gap 30` - minimum real minutes required since Step 4 last made a live request to YouTube, checked across every `--work-dir`, before it will run again; set to `0` to disable
+- `--ignore-cooldown` - run Step 4 even if `--min-session-gap` has not elapsed yet
 - `--from-step` / `--to-step` - rerun only part of the pipeline, numbered 1 through 8
 - `--no-llm` - run without the AI model, using simple offline fallbacks
 
@@ -83,7 +85,9 @@ The tool now protects itself and your IP address from making this worse. Between
 
 None of this is a guarantee. YouTube does not publish its bot-detection rules, and the single biggest cause of the one real block seen so far was running the whole pipeline three times back to back in twenty minutes against the same few videos, which per-request timing alone would not have fixed. Leaving real time, at least tens of minutes, ideally longer, between separate test sessions matters more than how the delay within one run is shaped.
 
-If this happens, wait a while, anywhere from tens of minutes to a few hours, before running Step 4 again. See the "Working around IP bans" section of the youtube-transcript-api project for further options, including residential rotating proxies, if this needs to run unattended and frequently.
+Because remembering to wait is easy to forget, especially across different `--work-dir` test runs, Step 4 now enforces this itself. It records the moment it last made a live request in `work-in-progress/.last_live_transcript_attempt.json`, shared across every run regardless of which `--work-dir` each one used, and refuses to start again until `--min-session-gap` real minutes (default 30) have actually passed, printing how much longer to wait instead of silently hammering YouTube again. `--ignore-cooldown` overrides it for a run where you are confident enough time has passed, and `--min-session-gap 0` turns the check off entirely.
+
+If a block does happen anyway, wait longer than the 30-minute default, anywhere from tens of minutes to a few hours, before running Step 4 again. See the "Working around IP bans" section of the youtube-transcript-api project for further options, including residential rotating proxies, if this needs to run unattended and frequently.
 
 ## Responsible use
 
