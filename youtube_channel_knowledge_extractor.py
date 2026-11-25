@@ -40,6 +40,7 @@ import argparse
 import json
 import numpy as np
 import os
+import random
 import re
 import shutil
 import time
@@ -58,7 +59,8 @@ class Settings:
     use_llm: bool = True
     similarity_threshold: float = 0.88
     min_sentence_words: int = 4
-    delay_seconds: float = 1.0
+    delay_min_seconds: float = 2.0
+    delay_max_seconds: float = 10.0
     max_videos: int = 0  # 0 means no limit
 
     @property
@@ -486,7 +488,9 @@ def download_transcripts(settings: Settings, organized: dict) -> dict:
                 consecutive_failures = 0
                 manifest[video["id"]] = entry
                 write_json(settings.manifest_file, manifest)
-                time.sleep(settings.delay_seconds)
+                pause = random.uniform(settings.delay_min_seconds, settings.delay_max_seconds)
+                print(f"  waiting {pause:.1f}s before the next request ...")
+                time.sleep(pause)
                 continue
             except Exception as exc:  # captions off, private video, blocked IP, and so on
                 entry["status"] = "failed"
@@ -506,7 +510,8 @@ def download_transcripts(settings: Settings, organized: dict) -> dict:
                 )
                 continue
 
-            backoff = min(settings.delay_seconds * (2 ** consecutive_failures), MAX_BACKOFF_SECONDS)
+            base_backoff = min(settings.delay_max_seconds * (2 ** consecutive_failures), MAX_BACKOFF_SECONDS)
+            backoff = base_backoff * random.uniform(0.75, 1.25)
             print(f"  Backing off for {backoff:.0f}s before the next request ...")
             time.sleep(backoff)
 
@@ -830,7 +835,16 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--no-llm", action="store_true", help="Skip the AI model and use simple offline fallbacks")
     p.add_argument("--threshold", type=float, default=0.88, help="Duplicate similarity from 0 to 1 (default: 0.88)")
     p.add_argument(
-        "--delay", type=float, default=2.0, help="Seconds to wait between transcript requests (default: 2.0)"
+        "--delay-min",
+        type=float,
+        default=2.0,
+        help="Shortest random wait, in seconds, between transcript requests (default: 2.0)",
+    )
+    p.add_argument(
+        "--delay-max",
+        type=float,
+        default=10.0,
+        help="Longest random wait, in seconds, between transcript requests (default: 10.0)",
     )
     p.add_argument("--max-videos", type=int, default=0, help="Limit videos for a quick test (0 means all)")
     return p.parse_args(argv)
@@ -852,7 +866,8 @@ def main(argv=None) -> int:
         languages=tuple(x.strip() for x in a.languages.split(",") if x.strip()),
         use_llm=not a.no_llm,
         similarity_threshold=a.threshold,
-        delay_seconds=a.delay,
+        delay_min_seconds=a.delay_min,
+        delay_max_seconds=a.delay_max,
         max_videos=a.max_videos,
     )
     settings.work_dir.mkdir(parents=True, exist_ok=True)
